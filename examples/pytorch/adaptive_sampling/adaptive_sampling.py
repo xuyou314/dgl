@@ -9,7 +9,7 @@ from dgl.data import citation_graph as citegrh
 ##load data
 data = citegrh.load_cora()
 adj=dgl.DGLGraph(data.graph).adjacency_matrix_scipy()
-train_nodes=np.arange(1000)
+train_nodes=np.arange(1208)
 test_nodes=np.arange(1700,2700)
 train_adj= adj[train_nodes, :][:, train_nodes]
 test_adj=adj[test_nodes,:][:,test_nodes]
@@ -24,12 +24,13 @@ y_train=torch.tensor(data.labels[train_nodes])
 y_test=torch.tensor(data.labels[test_nodes])
 ##configuration
 lamb=0.5
+weight_decay=5e-4
 input_size=h.shape[1]
 hidden_size=16
 output_size=7
 ##Sampling size for each layer
-layer_sizes=[128,128]
-batch_size=128
+layer_sizes=[256,256]
+batch_size=256
 class Sampler(object):
     def __init__(self, graph):
         self.graph = graph
@@ -455,7 +456,8 @@ for epoch in range(500):
         train_acc=torch.sum(torch.eq(y_pred,y_train_batch)).item()/batch_size
         loss = F.cross_entropy(train_y_hat.squeeze(), y_train_batch)
         #print(regloss.item(),loss.item())
-        total_loss=regloss*lamb+loss
+        l2_loss=torch.norm(params[0])
+        total_loss=regloss*lamb+loss+l2_loss*weight_decay
         opt.zero_grad()
         total_loss.backward()
         opt.step()
