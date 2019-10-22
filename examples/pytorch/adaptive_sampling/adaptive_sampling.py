@@ -6,11 +6,19 @@ import dgl.function as fn
 import numpy as np
 import scipy.sparse as ssp
 from dgl.data import citation_graph as citegrh
+import networkx as nx
 ##load data
 data = citegrh.load_cora()
-adj=dgl.DGLGraph(data.graph).adjacency_matrix_scipy()
+adj=nx.adjacency_matrix(data.graph)
+#reorder
+ids_shuffle = np.arange(2708)
+np.random.shuffle(ids_shuffle)
+adj=adj[ids_shuffle,:][:,ids_shuffle]
+data.features=data.features[ids_shuffle]
+data.labels=data.labels[ids_shuffle]
+##
 train_nodes=np.arange(1208)
-test_nodes=np.arange(1700,2700)
+test_nodes=np.arange(1708,2708)
 train_adj= adj[train_nodes, :][:, train_nodes]
 test_adj=adj[test_nodes,:][:,test_nodes]
 trainG=dgl.DGLGraph(train_adj)
