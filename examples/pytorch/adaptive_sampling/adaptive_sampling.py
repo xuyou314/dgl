@@ -7,7 +7,7 @@ import numpy as np
 import scipy.sparse as ssp
 from dgl.data import citation_graph as citegrh
 import networkx as nx
-##load data
+##load data pudb3
 data = citegrh.load_cora()
 adj=nx.adjacency_matrix(data.graph)
 #reorder
@@ -32,13 +32,17 @@ y_train=torch.tensor(data.labels[train_nodes])
 y_test=torch.tensor(data.labels[test_nodes])
 ##configuration
 lamb=0.5
+lr=1e-3
 weight_decay=5e-4
 input_size=h.shape[1]
 hidden_size=16
-output_size=7
+output_size=data.num_labels
 ##Sampling size for each layer
-layer_sizes=[256,256]
-batch_size=256
+layer_sizes=[128,128]
+batch_size=128
+test_batch_size=64
+avg_degree=8
+test_layer_sizes=[test_batch_size*avg_degree for _ in range(2)]
 class Sampler(object):
     def __init__(self, graph):
         self.graph = graph
@@ -59,15 +63,11 @@ class NodeSampler(Sampler):
     """Minibatch sampler that samples batches of nodes uniformly from the given graph and list of seeds.
     """
 
-    def __init__(self, graph, seeds, batch_size, input_size=None,layer_sample_nodes=None):
+    def __init__(self, graph, seeds, batch_size):
         super().__init__(graph)
         self.seeds = seeds
         self.batch_size = batch_size
-        self.input_size=input_size
-        if input_size:
-            self.sample_weight=torch.randn((input_size,2),dtype=torch.float64,requires_grad=True)
-            nn.init.xavier_uniform_(self.sample_weight)
-            self.layer_sample_node=layer_sample_nodes
+
     def __len__(self):
         return len(self.seeds) // self.batch_size
 
@@ -80,8 +80,6 @@ class NodeSampler(Sampler):
         for i in range(len(self)):
             if len(batches[i]) < self.batch_size:
                 break
-            if self.input_size:
-                yield self.seeds[batches[i]], batches[i],self.sample_weight,self.layer_sample_node
             else:
                 yield self.seeds[batches[i]], batches[i]
 
@@ -239,14 +237,22 @@ class DefaultGenerator(IterativeGenerator):
         return sample_neighbor, eid, num_neighbors,q_probs
 
 class AdaptGenerator(IterativeGenerator):
-    def __init__(self,graph, num_blocks,node_feature=None ,sampler=None, num_workers=0, coalesce=False):
+    def __init__(self,graph, num_blocks,node_feature=None ,sampler=None, num_workers=0, coalesce=False,
+                 sampler_weights=None,layer_nodes=None):
         """
 
         :type graph: dgl.DGLGraph
         """
         self.node_feature=node_feature.double()
-        self.norm_adj=normalize_adj(train_adj).tocsr()
-
+        adj = graph.adjacency_matrix_scipy()
+        adj.data = np.ones(adj.nnz)
+        self.norm_adj=normalize_adj(adj).tocsr()
+        self.layer_nodes=layer_nodes
+        if sampler_weights is not None:
+            self.sample_weights=sampler_weights
+        else:
+            self.sample_weights=torch.randn((input_size,2),dtype=torch.float64,requires_grad=True)
+            nn.init.xavier_uniform_(self.sample_weights)
         super(AdaptGenerator,self).__init__(graph, num_blocks, sampler, num_workers, coalesce)
 
     def stepback(self, curr_frontier,layer_index, *auxiliary):
@@ -256,8 +262,8 @@ class AdaptGenerator(IterativeGenerator):
         # retrieve x
         # x = self.graph.ndata['x']
         is_sparse=False
-        sample_weights=auxiliary[1]
-        layer_size=auxiliary[2][layer_index]
+        sample_weights=self.sample_weights
+        layer_size=self.layer_nodes[layer_index]
         current_layer_feature=self.node_feature[curr_frontier]
 
         src,des, eid = self.graph.in_edges(curr_frontier, form='all')
@@ -437,24 +443,28 @@ class GraphSAGENet2(nn.Module):
 
 
 # Create a sampler
-train_sampler = NodeSampler(graph=trainG, seeds=train_nodes, batch_size=batch_size, input_size=input_size, layer_sample_nodes=layer_sizes)
+train_sampler = NodeSampler(graph=trainG, seeds=train_nodes, batch_size=batch_size)
 # Initialize a generator with the created sampler
-test_sampler = NodeSampler(graph=trainG, seeds=test_nodes, batch_size=len(test_nodes), input_size=input_size, layer_sample_nodes=layer_sizes)
+test_sampler = NodeSampler(graph=allG, seeds=test_nodes, batch_size=test_batch_size)
 ##Generator for training
-nf_generator =AdaptGenerator(graph=trainG, node_feature=all_h, sampler=train_sampler, num_blocks=len(layer_sizes), coalesce=True)
+train_generator =AdaptGenerator(graph=trainG, node_feature=all_h, layer_nodes=layer_sizes, sampler=train_sampler,
+                                num_blocks=len(layer_sizes), coalesce=True)
 #Generator for testing
-test_generator=DefaultGenerator(graph=allG,sampler=test_sampler,num_blocks=len(layer_sizes),coalesce=True)
-model2 = GraphSAGENet2(train_sampler.sample_weight,all_h)
+#test_generator=DefaultGenerator(graph=allG,sampler=test_sampler,num_blocks=len(layer_sizes),coalesce=True)
+test_sample_generator=AdaptGenerator(graph=allG,node_feature=all_h,sampler=test_sampler,num_blocks=len(test_layer_sizes),
+                                    sampler_weights=train_generator.sample_weights,layer_nodes=test_layer_sizes,coalesce=True)
+model2 = GraphSAGENet2(train_generator.sample_weights,all_h)
 params=list(model2.parameters())
-params.append(train_sampler.sample_weight)
-opt = torch.optim.Adam(params=params)
+params.append(train_generator.sample_weights)
+opt = torch.optim.Adam(params=params,lr=lr)
 model2.train()
 
 for epoch in range(500):
     # Equivalently:
     # for seeds, sample_indices in train_sampler:
     #    nf = nf_generator(seeds)
-    for nf, sample_indices in nf_generator:
+    train_accs=[]
+    for nf, sample_indices in train_generator:
         seed_map = nf.seed_map
         train_y_hat, regloss = model2(nf, h[nf.layer_mappings[0]])
         train_y_hat=train_y_hat[seed_map]
@@ -462,6 +472,7 @@ for epoch in range(500):
         y_train_batch = y_train[sample_indices]
         y_pred=torch.argmax(train_y_hat, dim=1)
         train_acc=torch.sum(torch.eq(y_pred,y_train_batch)).item()/batch_size
+        train_accs.append(train_acc)
         loss = F.cross_entropy(train_y_hat.squeeze(), y_train_batch)
         #print(regloss.item(),loss.item())
         l2_loss=torch.norm(params[0])
@@ -470,12 +481,14 @@ for epoch in range(500):
         total_loss.backward()
         opt.step()
         #print(train_sampler.sample_weight)
-    for test_nf,test_sample_indices in test_generator:
+    for test_nf,test_sample_indices in test_sample_generator:
         seed_map = test_nf.seed_map
+        #print(test_sample_indices)
         test_y_hat= model2(test_nf, all_h[test_nf.layer_mappings[0]], is_test=True)
         #print("test",test_y_hat)
         test_y_hat=test_y_hat[seed_map]
         y_test_batch=y_test[test_sample_indices]
         y_pred=torch.argmax(test_y_hat, dim=1)
         test_acc=torch.sum(torch.eq(y_pred,y_test_batch)).item()/len(y_pred)
-    print("eqoch{} train accuracy {}, regloss {}, loss {} ,test accuracy {}".format(epoch,train_acc, regloss.item()*lamb,loss.item(),test_acc))
+        break
+    print("eqoch{} train accuracy {}, regloss {}, loss {} ,test accuracy {}".format(epoch,np.mean(train_acc), regloss.item()*lamb,total_loss.item(),test_acc))
