@@ -450,4 +450,4 @@ for epoch in range(500):
         y_pred=torch.argmax(test_y_hat, dim=1)
         test_acc=torch.sum(torch.eq(y_pred,y_test_batch)).item()/len(y_pred)
         test_accs.append(test_acc)
-    print("eqoch{} train accuracy {}, regloss {}, loss {} ,test accuracy {}".format(epoch,np.mean(train_acc), regloss.item()*lamb,total_loss.item(),np.mean(test_acc)))
+    print("eqoch{} train accuracy {}, regloss {}, loss {} ,test accuracy {}".format(epoch,np.mean(train_acc), regloss.item()*lamb,total_loss.item(),np.mean(test_accs)))
