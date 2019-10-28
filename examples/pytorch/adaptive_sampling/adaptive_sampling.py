@@ -439,6 +439,7 @@ for epoch in range(500):
         total_loss.backward()
         opt.step()
         #print(train_sampler.sample_weight)
+    test_accs=[]
     for test_nf,test_sample_indices in test_sample_generator:
         seed_map = test_nf.seed_map
         #print(test_sample_indices)
@@ -448,5 +449,5 @@ for epoch in range(500):
         y_test_batch=y_test[test_sample_indices]
         y_pred=torch.argmax(test_y_hat, dim=1)
         test_acc=torch.sum(torch.eq(y_pred,y_test_batch)).item()/len(y_pred)
-        break
-    print("eqoch{} train accuracy {}, regloss {}, loss {} ,test accuracy {}".format(epoch,np.mean(train_acc), regloss.item()*lamb,total_loss.item(),test_acc))
+        test_accs.append(test_acc)
+    print("eqoch{} train accuracy {}, regloss {}, loss {} ,test accuracy {}".format(epoch,np.mean(train_acc), regloss.item()*lamb,total_loss.item(),np.mean(test_acc)))
