@@ -7,7 +7,7 @@ import numpy as np
 import scipy.sparse as ssp
 from dgl.data import citation_graph as citegrh
 import networkx as nx
-##load data pudb3
+##load data
 data = citegrh.load_cora()
 adj=nx.adjacency_matrix(data.graph)
 #reorder
@@ -175,11 +175,6 @@ class IterativeGenerator(Generator):
                 'layer%d' % i, 'block%d' % i, 'layer%d' % (i + 1),
                 (len(prev_frontier), len(curr_frontier))
             ))
-            # rel_graphs.insert(0, dgl.bipartite(
-            #     (block_srcs[-len(curr_frontier):], np.arange(len(curr_frontier))),
-            #     'layer%d' % i, 'block%d_self' %i, 'layer%d' % (i+ 1),
-            #     (len(prev_frontier), len(curr_frontier))
-            # ))
 
             layer_mappings.insert(0, prev_frontier)
             block_mappings.insert(0, prev_frontier_edges)
@@ -218,23 +213,6 @@ class IterativeGenerator(Generator):
             auxiliary could be of any type containing block-specific additional data.
         """
         raise NotImplementedError
-class DefaultGenerator(IterativeGenerator):
-    def stepback(self, curr_frontier,layer_index, *auxiliary):
-        # Relies on that the same dst node of in_edges are contiguous, and the dst nodes
-        # are ordered the same as curr_frontier.
-
-        src, _, eid = self.graph.in_edges(curr_frontier, form='all')
-        pre_nodes=torch.unique(torch.cat([src,curr_frontier],dim=0))
-        curr_padding = curr_frontier.repeat_interleave(len(pre_nodes))
-        cand_padding = pre_nodes.repeat(len(curr_frontier))
-        has_loops = curr_padding == cand_padding
-        has_edges = self.graph.has_edges_between(cand_padding, curr_padding)
-        loops_or_edges = (has_edges.bool() + has_loops).int()
-        num_neighbors = loops_or_edges.reshape((len(curr_frontier), -1)).sum(1)
-        sample_neighbor=cand_padding[loops_or_edges.bool()]
-
-        q_probs=torch.ones(sample_neighbor.shape[0],dtype=torch.float64)
-        return sample_neighbor, eid, num_neighbors,q_probs
 
 class AdaptGenerator(IterativeGenerator):
     def __init__(self,graph, num_blocks,node_feature=None ,sampler=None, num_workers=0, coalesce=False,
@@ -274,6 +252,7 @@ class AdaptGenerator(IterativeGenerator):
              tensor_adj=torch.sparse.DoubleTensor(sparse_adj.row,sparse_adj.col,sparse_adj.data)
         else:
              tensor_adj = torch.tensor(sparse_adj.A)
+
         hu=torch.matmul(self.node_feature[neighbor_nodes],sample_weights[:,0])
         hv=torch.sum(torch.matmul(self.node_feature[curr_frontier],sample_weights[:,1]))
         adj_part=torch.sqrt(torch.sum(torch.pow(tensor_adj,2),dim=0))
@@ -281,7 +260,7 @@ class AdaptGenerator(IterativeGenerator):
         gu=F.relu(hu)+1
         probas=adj_part*attension_part*gu
         probas=probas/torch.sum(probas)
-        ##sparse_adj
+        ##build graph between canidates and curr_frontier
         canidates=neighbor_nodes[probas.multinomial(num_samples=layer_size,replacement=True)]
         ivmap={x: i for i,x in enumerate(neighbor_nodes.numpy())}
 
@@ -291,26 +270,10 @@ class AdaptGenerator(IterativeGenerator):
         has_edges= self.graph.has_edges_between(cand_padding,curr_padding)
         loops_or_edges=(has_edges.bool()+has_loops).int()
         num_neighbors= loops_or_edges.reshape((len(curr_frontier),-1)).sum(1)
-        # for i in range(len(curr_frontier)):
-        #     for j in range(len(canidates)):
-        #         if curr_frontier[i]==canidates[j] or self.graph.has_edge_between(canidates[j].item(),curr_frontier[i].item()):
-        #             num_neighbors[i]+=1
         eids=torch.zeros(torch.sum(num_neighbors),dtype=torch.int64)-1
 
         sample_neighbor=cand_padding[loops_or_edges.bool()]
-        #curid = 0
-        # for i in range(len(curr_frontier)):
-        #     for j in range(len(canidates)):
-        #         if curr_frontier[i]==canidates[j] or self.graph.has_edge_between(canidates[j].item(),curr_frontier[i].item()):
-        #             if curr_frontier[i]==canidates[j]:
-        #                 eids[curid]=-1
-        #             else:
-        #                 eids[curid]=self.graph.edge_id(canidates[j],curr_frontier[i])
-        #             sample_neighbor[curid]=canidates[j]
-        #             curid+=1
         q_prob=probas[[ivmap[i] for i in sample_neighbor.numpy()]]
-        #sample_neighbor=sample_neighbor.repeat(len(curr_frontier))
-        #num_neighbors = torch.LongTensor(len(sample_neighbor)).repeat(len(curr_frontier))
         has_edge_ids=torch.where(has_edges)[0]
         all_ids=torch.where(loops_or_edges)[0]
         edges_ids_map=torch.where(has_edge_ids[:,None]==all_ids[None,:])[1]
@@ -400,7 +363,7 @@ class SAGEConv2(nn.Module):
         # normalization
         if self.norm is not None:
             rst = self.norm(rst)
-
+        #compute the variance loss
         if var_loss and not is_test:
             pre_sup=self.fc_neigh(hidden_feat) #u*h
             support=norm_adj[graph.layer_mappings[layer_id+1],:][:,graph.layer_mappings[layer_id]]##v*u
@@ -460,21 +423,16 @@ opt = torch.optim.Adam(params=params,lr=lr)
 model2.train()
 
 for epoch in range(500):
-    # Equivalently:
-    # for seeds, sample_indices in train_sampler:
-    #    nf = nf_generator(seeds)
     train_accs=[]
     for nf, sample_indices in train_generator:
         seed_map = nf.seed_map
         train_y_hat, regloss = model2(nf, h[nf.layer_mappings[0]])
         train_y_hat=train_y_hat[seed_map]
-        #print("train",train_y_hat)
         y_train_batch = y_train[sample_indices]
         y_pred=torch.argmax(train_y_hat, dim=1)
         train_acc=torch.sum(torch.eq(y_pred,y_train_batch)).item()/batch_size
         train_accs.append(train_acc)
         loss = F.cross_entropy(train_y_hat.squeeze(), y_train_batch)
-        #print(regloss.item(),loss.item())
         l2_loss=torch.norm(params[0])
         total_loss=regloss*lamb+loss+l2_loss*weight_decay
         opt.zero_grad()
