@@ -12,6 +12,7 @@ from pprint import pprint
 from scipy import sparse
 from scipy import io as sio
 
+
 def set_random_seed(seed=0):
     """Set random seed.
     Parameters
@@ -24,6 +25,7 @@ def set_random_seed(seed=0):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
+
 
 def mkdir_p(path, log=True):
     """Create a directory for the specified path.
@@ -44,6 +46,7 @@ def mkdir_p(path, log=True):
         else:
             raise
 
+
 def get_date_postfix():
     """Get a date based postfix for directory name.
     Returns
@@ -55,6 +58,7 @@ def get_date_postfix():
         dt.date(), dt.hour, dt.minute, dt.second)
 
     return post_fix
+
 
 def setup_log_dir(args, sampling=False):
     """Name and create directory for logging.
@@ -80,10 +84,43 @@ def setup_log_dir(args, sampling=False):
     mkdir_p(log_dir)
     return log_dir
 
+
+def metagraph_graph(g, meta_graph):
+    '''
+    :param g: heterogenous graph
+    :param meta_graph:
+    eg:[[['pa','ap'],['pt','tp']]]
+    :return: new heterogenous graph for given meta graph
+    '''
+    final_adj = 1
+    for sub_graph in meta_graph:
+        cur_sub_g = 1
+        for sub_meta_path in sub_graph:
+            metap_adj = 1
+            for etype in sub_meta_path:
+                metap_adj = metap_adj * g.adj(etype=etype, scipy_fmt='csr', transpose=True)
+            cur_sub_g = metap_adj.multiply(cur_sub_g)
+        final_adj = final_adj * cur_sub_g
+    final_adj = (final_adj != 0).tocsr()
+
+    srctype = g.to_canonical_etype(meta_graph[0][0][0])[0]
+    dsttype = g.to_canonical_etype(meta_graph[-1][-1][-1])[-1]
+    assert final_adj.shape[0] == final_adj.shape[1]
+    new_g = dgl.graph(final_adj, ntype=srctype)
+
+    for key, value in g.nodes[srctype].data.items():
+        new_g.nodes[srctype].data[key] = value
+    if srctype != dsttype:
+        for key, value in g.nodes[dsttype].data.items():
+            new_g.nodes[dsttype].data[key] = value
+
+    return new_g
+
+
 # The configuration below is from the paper.
 default_configure = {
-    'lr': 0.005,             # Learning rate
-    'num_heads': [8],        # Number of attention heads for node-level attention
+    'lr': 0.005,  # Learning rate
+    'num_heads': [8],  # Number of attention heads for node-level attention
     'hidden_units': 8,
     'dropout': 0.6,
     'weight_decay': 0.001,
@@ -95,13 +132,17 @@ sampling_configure = {
     'batch_size': 20
 }
 
+
 def setup(args):
     args.update(default_configure)
     set_random_seed(args['seed'])
     args['dataset'] = 'ACMRaw' if args['hetero'] else 'ACM'
+    if args['dblp']:
+        args['dataset'] = 'DBLP'
     args['device'] = 'cuda: 0' if torch.cuda.is_available() else 'cpu'
     args['log_dir'] = setup_log_dir(args)
     return args
+
 
 def setup_for_sampling(args):
     args.update(default_configure)
@@ -111,10 +152,12 @@ def setup_for_sampling(args):
     args['log_dir'] = setup_log_dir(args, sampling=True)
     return args
 
+
 def get_binary_mask(total_size, indices):
     mask = torch.zeros(total_size)
     mask[indices] = 1
     return mask.byte()
+
 
 def load_acm(remove_self_loop):
     url = 'dataset/ACM3025.pkl'
@@ -160,6 +203,7 @@ def load_acm(remove_self_loop):
     return gs, features, labels, num_classes, train_idx, val_idx, test_idx, \
            train_mask, val_mask, test_mask
 
+
 def load_acm_raw(remove_self_loop):
     assert not remove_self_loop
     url = 'dataset/ACM.mat'
@@ -167,10 +211,10 @@ def load_acm_raw(remove_self_loop):
     download(_get_dgl_url(url), path=data_path)
 
     data = sio.loadmat(data_path)
-    p_vs_l = data['PvsL']       # paper-field?
-    p_vs_a = data['PvsA']       # paper-author
-    p_vs_t = data['PvsT']       # paper-term, bag of words
-    p_vs_c = data['PvsC']       # paper-conference, labels come from that
+    p_vs_l = data['PvsL']  # paper-field?
+    p_vs_a = data['PvsA']  # paper-author
+    p_vs_t = data['PvsT']  # paper-term, bag of words
+    p_vs_c = data['PvsC']  # paper-conference, labels come from that
 
     # We assign
     # (1) KDD papers as class 0 (data mining),
@@ -190,7 +234,9 @@ def load_acm_raw(remove_self_loop):
     ap = dgl.bipartite(p_vs_a.transpose(), 'author', 'ap', 'paper')
     pl = dgl.bipartite(p_vs_l, 'paper', 'pf', 'field')
     lp = dgl.bipartite(p_vs_l.transpose(), 'field', 'fp', 'paper')
-    hg = dgl.hetero_from_relations([pa, ap, pl, lp])
+    pt = dgl.bipartite(p_vs_t, 'paper', 'pt', "term")
+    tp = dgl.bipartite(p_vs_t.transpose(), 'term', 'tp', 'paper')
+    hg = dgl.hetero_from_relations([pa, ap, pl, lp, pt, tp])
 
     features = torch.FloatTensor(p_vs_t.toarray())
 
@@ -216,15 +262,75 @@ def load_acm_raw(remove_self_loop):
     test_mask = get_binary_mask(num_nodes, test_idx)
 
     return hg, features, labels, num_classes, train_idx, val_idx, test_idx, \
-            train_mask, val_mask, test_mask
+           train_mask, val_mask, test_mask
+
+
+def load_dblp_raw(remove_self_loop):
+    assert not remove_self_loop
+    # url = 'dataset/ACM.mat'
+    data_path = get_download_dir() + '/LabDBLP.mat'
+    fea_path=get_download_dir()+'/DBLP_feat'
+    # download(_get_dgl_url(url), path=data_path)
+
+    data = sio.loadmat(data_path)
+    selected_aut_id = data['Aut_lab'][:, 0]
+    id2index = {v: k for k, v in enumerate(data['AutID'][:, 0])}
+    selected_aut_index = np.array([id2index[id] for id in selected_aut_id])
+    selected_paper_index = np.where(data['PA'][:, selected_aut_index].sum(1))[0]
+    selected_term_index = np.where(data['PT'][selected_paper_index, :].sum(0))[1]
+
+    p_vs_a = data['PA'][selected_paper_index, :][:, selected_aut_index]  # paper-author
+    p_vs_t = data['PT'][selected_paper_index, :][:, selected_term_index]  # paper-term, bag of words
+    p_vs_c = data['PC'][selected_paper_index, :]  # paper-conference, labels come from that
+
+    pa = dgl.bipartite(p_vs_a, 'paper', 'pa', 'author')
+    ap = dgl.bipartite(p_vs_a.transpose(), 'author', 'ap', 'paper')
+    pt = dgl.bipartite(p_vs_t, 'paper', 'pt', "term")
+    tp = dgl.bipartite(p_vs_t.transpose(), 'term', 'tp', 'paper')
+    pc = dgl.bipartite(p_vs_c, 'paper', 'pc', 'conference')
+    cp = dgl.bipartite(p_vs_c.transpose(), 'conference', 'cp', 'paper')
+
+    hg = dgl.hetero_from_relations([pa, ap, pt, tp, pc, cp])
+    #we assign the terms in the papers which the author published as
+    # the author's feature
+
+    #features = torch.FloatTensor(p_vs_a.transpose()*p_vs_t.toarray())
+    fea_data=np.loadtxt(fea_path)
+    features = torch.FloatTensor(fea_data)
+    #pc_p, pc_c = p_vs_c.nonzero()
+    labels = data['Aut_lab'][:,1]-1
+
+    labels = torch.LongTensor(labels)
+
+    num_classes = 4
+
+    float_mask = np.zeros(len(labels))
+    for class_id in range(num_classes):
+        pc_a_mask = (data['Aut_lab'][:,1] == class_id+1)
+        float_mask[pc_a_mask] = np.random.permutation(np.linspace(0, 1, pc_a_mask.sum()))
+    train_idx = np.where(float_mask <= 0.2)[0]
+    val_idx = np.where((float_mask > 0.2) & (float_mask <= 0.3))[0]
+    test_idx = np.where(float_mask > 0.3)[0]
+
+    num_nodes = hg.number_of_nodes('author')
+    train_mask = get_binary_mask(num_nodes, train_idx)
+    val_mask = get_binary_mask(num_nodes, val_idx)
+    test_mask = get_binary_mask(num_nodes, test_idx)
+
+    return hg, features, labels, num_classes, train_idx, val_idx, test_idx, \
+           train_mask, val_mask, test_mask
+
 
 def load_data(dataset, remove_self_loop=False):
     if dataset == 'ACM':
         return load_acm(remove_self_loop)
     elif dataset == 'ACMRaw':
         return load_acm_raw(remove_self_loop)
+    elif dataset == 'DBLP':
+        return load_dblp_raw(remove_self_loop)
     else:
         return NotImplementedError('Unsupported dataset {}'.format(dataset))
+
 
 class EarlyStopping(object):
     def __init__(self, patience=10):
