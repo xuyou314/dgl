@@ -6,13 +6,14 @@ import os
 import pickle
 import random
 import torch
-
+from torch import nn
 from dgl.data.utils import download, get_download_dir, _get_dgl_url
 from pprint import pprint
 from scipy import sparse
 from scipy import io as sio
-
-
+from dgl.nn.pytorch.utils import Identity
+from dgl.nn.pytorch.softmax import edge_softmax
+import dgl.function as fn
 def set_random_seed(seed=0):
     """Set random seed.
     Parameters
@@ -85,7 +86,7 @@ def setup_log_dir(args, sampling=False):
     return log_dir
 
 
-def metagraph_graph(g, meta_graph):
+def metagraph_graph(g, meta_graph, both_appear=True,weighted=False):
     '''
     :param g: heterogenous graph
     :param meta_graph:
@@ -99,10 +100,16 @@ def metagraph_graph(g, meta_graph):
             metap_adj = 1
             for etype in sub_meta_path:
                 metap_adj = metap_adj * g.adj(etype=etype, scipy_fmt='csr', transpose=True)
-            cur_sub_g = metap_adj.multiply(cur_sub_g)
+            if both_appear:
+                cur_sub_g = metap_adj.multiply(cur_sub_g)
+            elif isinstance(cur_sub_g, int):
+                cur_sub_g = metap_adj
+            else:
+                cur_sub_g = metap_adj + cur_sub_g
         final_adj = final_adj * cur_sub_g
-    final_adj = (final_adj != 0).tocsr()
-
+        if not weighted:
+            final_adj = (final_adj != 0).tocsr()
+    final_adj=final_adj+sparse.eye(final_adj.shape[0])
     srctype = g.to_canonical_etype(meta_graph[0][0][0])[0]
     dsttype = g.to_canonical_etype(meta_graph[-1][-1][-1])[-1]
     assert final_adj.shape[0] == final_adj.shape[1]
@@ -110,6 +117,8 @@ def metagraph_graph(g, meta_graph):
 
     for key, value in g.nodes[srctype].data.items():
         new_g.nodes[srctype].data[key] = value
+    new_g.edata['edge_weight']=torch.tensor(final_adj.data,dtype=torch.float32
+                                            ,device='cuda:0')
     if srctype != dsttype:
         for key, value in g.nodes[dsttype].data.items():
             new_g.nodes[dsttype].data[key] = value
@@ -124,7 +133,7 @@ default_configure = {
     'hidden_units': 8,
     'dropout': 0.6,
     'weight_decay': 0.001,
-    'num_epochs': 200,
+    'num_epochs': 400,
     'patience': 100
 }
 
@@ -136,9 +145,7 @@ sampling_configure = {
 def setup(args):
     args.update(default_configure)
     set_random_seed(args['seed'])
-    args['dataset'] = 'ACMRaw' if args['hetero'] else 'ACM'
-    if args['dblp']:
-        args['dataset'] = 'DBLP'
+    #args['dataset'] = 'ACMRaw' if args['hetero'] else 'ACM'
     args['device'] = 'cuda: 0' if torch.cuda.is_available() else 'cpu'
     args['log_dir'] = setup_log_dir(args)
     return args
@@ -269,7 +276,7 @@ def load_dblp_raw(remove_self_loop):
     assert not remove_self_loop
     # url = 'dataset/ACM.mat'
     data_path = get_download_dir() + '/LabDBLP.mat'
-    fea_path=get_download_dir()+'/DBLP_feat'
+    fea_path = get_download_dir() + '/DBLP_feat'
     # download(_get_dgl_url(url), path=data_path)
 
     data = sio.loadmat(data_path)
@@ -291,14 +298,14 @@ def load_dblp_raw(remove_self_loop):
     cp = dgl.bipartite(p_vs_c.transpose(), 'conference', 'cp', 'paper')
 
     hg = dgl.hetero_from_relations([pa, ap, pt, tp, pc, cp])
-    #we assign the terms in the papers which the author published as
+    # we assign the terms in the papers which the author published as
     # the author's feature
 
-    #features = torch.FloatTensor(p_vs_a.transpose()*p_vs_t.toarray())
-    fea_data=np.loadtxt(fea_path)
+    # features = torch.FloatTensor(p_vs_a.transpose()*p_vs_t.toarray())
+    fea_data = np.loadtxt(fea_path)
     features = torch.FloatTensor(fea_data)
-    #pc_p, pc_c = p_vs_c.nonzero()
-    labels = data['Aut_lab'][:,1]-1
+    # pc_p, pc_c = p_vs_c.nonzero()
+    labels = data['Aut_lab'][:, 1] - 1
 
     labels = torch.LongTensor(labels)
 
@@ -306,7 +313,7 @@ def load_dblp_raw(remove_self_loop):
 
     float_mask = np.zeros(len(labels))
     for class_id in range(num_classes):
-        pc_a_mask = (data['Aut_lab'][:,1] == class_id+1)
+        pc_a_mask = (data['Aut_lab'][:, 1] == class_id + 1)
         float_mask[pc_a_mask] = np.random.permutation(np.linspace(0, 1, pc_a_mask.sum()))
     train_idx = np.where(float_mask <= 0.2)[0]
     val_idx = np.where((float_mask > 0.2) & (float_mask <= 0.3))[0]
@@ -321,6 +328,53 @@ def load_dblp_raw(remove_self_loop):
            train_mask, val_mask, test_mask
 
 
+def load_imdb_raw(remove_self_loop):
+    assert not remove_self_loop
+    # url = 'dataset/ACM.mat'
+    data_path = get_download_dir() + '/imdb_3_class.pkl'
+    # download(_get_dgl_url(url), path=data_path)
+    f=open(data_path,mode="rb")
+    data = pickle.load(f)
+
+    m_vs_d = data['md'] # movie-director
+    m_vs_a = data['ma'] # movie-actor
+
+
+    md = dgl.bipartite(m_vs_d, 'movie', 'md', 'director')
+    dm = dgl.bipartite(m_vs_d.transpose(), 'director', 'dm', 'movie')
+    ma = dgl.bipartite(m_vs_a, 'movie', 'ma', "actor")
+    am = dgl.bipartite(m_vs_a.transpose(), 'actor', 'am', 'movie')
+
+
+    hg = dgl.hetero_from_relations([md, dm, ma, am])
+    # we assign the terms in the papers which the author published as
+    # the author's feature
+
+    # features = torch.FloatTensor(p_vs_a.transpose()*p_vs_t.toarray())
+    fea_data = data['fea'].todense()
+    features = torch.FloatTensor(fea_data)
+    # pc_p, pc_c = p_vs_c.nonzero()
+    labels_arr = np.array(data['labels'])
+
+    labels = torch.LongTensor(labels_arr)
+
+    num_classes = 3
+
+    float_mask = np.zeros(len(labels))
+    for class_id in range(num_classes):
+        mask = (labels_arr == class_id)
+        float_mask[mask] = np.random.permutation(np.linspace(0, 1, mask.sum()))
+    train_idx = np.where(float_mask <= 0.2)[0]
+    val_idx = np.where((float_mask > 0.2) & (float_mask <= 0.3))[0]
+    test_idx = np.where(float_mask > 0.3)[0]
+
+    num_nodes = hg.number_of_nodes('movie')
+    train_mask = get_binary_mask(num_nodes, train_idx)
+    val_mask = get_binary_mask(num_nodes, val_idx)
+    test_mask = get_binary_mask(num_nodes, test_idx)
+
+    return hg, features, labels, num_classes, train_idx, val_idx, test_idx, \
+           train_mask, val_mask, test_mask
 def load_data(dataset, remove_self_loop=False):
     if dataset == 'ACM':
         return load_acm(remove_self_loop)
@@ -328,6 +382,8 @@ def load_data(dataset, remove_self_loop=False):
         return load_acm_raw(remove_self_loop)
     elif dataset == 'DBLP':
         return load_dblp_raw(remove_self_loop)
+    elif dataset == 'IMDB':
+        return load_imdb_raw(remove_self_loop)
     else:
         return NotImplementedError('Unsupported dataset {}'.format(dataset))
 
@@ -368,3 +424,118 @@ class EarlyStopping(object):
     def load_checkpoint(self, model):
         """Load the latest checkpoint."""
         model.load_state_dict(torch.load(self.filename))
+class GATConv(nn.Module):
+    r"""Apply `Graph Attention Network <https://arxiv.org/pdf/1710.10903.pdf>`__
+    over an input signal.
+
+    .. math::
+        h_i^{(l+1)} = \sum_{j\in \mathcal{N}(i)} \alpha_{i,j} W^{(l)} h_j^{(l)}
+
+    where :math:`\alpha_{ij}` is the attention score bewteen node :math:`i` and
+    node :math:`j`:
+
+    .. math::
+        \alpha_{ij}^{l} & = \mathrm{softmax_i} (e_{ij}^{l})
+
+        e_{ij}^{l} & = \mathrm{LeakyReLU}\left(\vec{a}^T [W h_{i} \| W h_{j}]\right)
+
+    Parameters
+    ----------
+    in_feats : int
+        Input feature size.
+    out_feats : int
+        Output feature size.
+    num_heads : int
+        Number of heads in Multi-Head Attention.
+    feat_drop : float, optional
+        Dropout rate on feature, defaults: ``0``.
+    attn_drop : float, optional
+        Dropout rate on attention weight, defaults: ``0``.
+    negative_slope : float, optional
+        LeakyReLU angle of negative slope.
+    residual : bool, optional
+        If True, use residual connection.
+    activation : callable activation function/layer or None, optional.
+        If not None, applies an activation function to the updated node features.
+        Default: ``None``.
+    """
+    def __init__(self,
+                 in_feats,
+                 out_feats,
+                 num_heads,
+                 feat_drop=0.,
+                 attn_drop=0.,
+                 negative_slope=0.2,
+                 residual=False,
+                 activation=None):
+        super(GATConv, self).__init__()
+        self._num_heads = num_heads
+        self._in_feats = in_feats
+        self._out_feats = out_feats
+        self.fc = nn.Linear(in_feats, out_feats * num_heads, bias=False)
+        self.attn_l = nn.Parameter(torch.FloatTensor(size=(1, num_heads, out_feats)))
+        self.attn_r = nn.Parameter(torch.FloatTensor(size=(1, num_heads, out_feats)))
+        self.feat_drop = nn.Dropout(feat_drop)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.leaky_relu = nn.LeakyReLU(negative_slope)
+        if residual:
+            if in_feats != out_feats:
+                self.res_fc = nn.Linear(in_feats, num_heads * out_feats, bias=False)
+            else:
+                self.res_fc = Identity()
+        else:
+            self.register_buffer('res_fc', None)
+        self.reset_parameters()
+        self.activation = activation
+
+    def reset_parameters(self):
+        """Reinitialize learnable parameters."""
+        gain = nn.init.calculate_gain('relu')
+        nn.init.xavier_normal_(self.fc.weight, gain=gain)
+        nn.init.xavier_normal_(self.attn_l, gain=gain)
+        nn.init.xavier_normal_(self.attn_r, gain=gain)
+        if isinstance(self.res_fc, nn.Linear):
+            nn.init.xavier_normal_(self.res_fc.weight, gain=gain)
+
+    def forward(self, graph, feat):
+        r"""Compute graph attention network layer.
+
+        Parameters
+        ----------
+        graph : DGLGraph
+            The graph.
+        feat : torch.Tensor
+            The input feature of shape :math:`(N, D_{in})` where :math:`D_{in}`
+            is size of input feature, :math:`N` is the number of nodes.
+
+        Returns
+        -------
+        torch.Tensor
+            The output feature of shape :math:`(N, H, D_{out})` where :math:`H`
+            is the number of heads, and :math:`D_{out}` is size of output feature.
+        """
+        graph = graph.local_var()
+        h = self.feat_drop(feat)
+        feat = self.fc(h).view(-1, self._num_heads, self._out_feats)
+        el = (feat * self.attn_l).sum(dim=-1).unsqueeze(-1)
+        er = (feat * self.attn_r).sum(dim=-1).unsqueeze(-1)
+        graph.ndata.update({'ft': feat, 'el': el, 'er': er})
+        # compute edge attention
+        graph.apply_edges(fn.u_add_v('el', 'er', 'e'))
+        e = self.leaky_relu(graph.edata.pop('e'))
+        #multiplcation with edge weights
+        e=graph.edata['edge_weight'].reshape((-1,1,1))*e
+        # compute softmax
+        graph.edata['a'] = self.attn_drop(edge_softmax(graph, e))
+        # message passing
+        graph.update_all(fn.u_mul_e('ft', 'a', 'm'),
+                         fn.sum('m', 'ft'))
+        rst = graph.ndata['ft']
+        # residual
+        if self.res_fc is not None:
+            resval = self.res_fc(h).view(h.shape[0], -1, self._out_feats)
+            rst = rst + resval
+        # activation
+        if self.activation:
+            rst = self.activation(rst)
+        return rst
