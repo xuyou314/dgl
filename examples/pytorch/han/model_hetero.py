@@ -29,9 +29,11 @@ class SemanticAttention(nn.Module):
     def forward(self, z):
         w = self.project(z)
         beta = torch.softmax(w, dim=1)
+        # print("semantic attention score {}".format(beta.cpu().
+        #                                            detach().numpy().squeeze(-1).mean(0)))
         print("semantic attention score {}".format(beta.cpu().
                                                    detach().numpy().squeeze(-1).mean(0)))
-        return (beta * z).sum(1)
+        return (w * z).sum(1)
 
 
 class HANLayer(nn.Module):

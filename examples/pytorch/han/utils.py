@@ -14,6 +14,8 @@ from scipy import io as sio
 from dgl.nn.pytorch.utils import Identity
 from dgl.nn.pytorch.softmax import edge_softmax
 import dgl.function as fn
+
+
 def set_random_seed(seed=0):
     """Set random seed.
     Parameters
@@ -86,7 +88,7 @@ def setup_log_dir(args, sampling=False):
     return log_dir
 
 
-def metagraph_graph(g, meta_graph, both_appear=True,weighted=False):
+def metagraph_graph(g, meta_graph, both_appear=True, weighted=False):
     '''
     :param g: heterogenous graph
     :param meta_graph:
@@ -107,9 +109,11 @@ def metagraph_graph(g, meta_graph, both_appear=True,weighted=False):
             else:
                 cur_sub_g = metap_adj + cur_sub_g
         final_adj = final_adj * cur_sub_g
+        final_adj.setdiag(0)
+        final_adj.eliminate_zeros()
+        final_adj = final_adj + sparse.eye(final_adj.shape[0])
         if not weighted:
             final_adj = (final_adj != 0).tocsr()
-    final_adj=final_adj+sparse.eye(final_adj.shape[0])
     srctype = g.to_canonical_etype(meta_graph[0][0][0])[0]
     dsttype = g.to_canonical_etype(meta_graph[-1][-1][-1])[-1]
     assert final_adj.shape[0] == final_adj.shape[1]
@@ -117,8 +121,8 @@ def metagraph_graph(g, meta_graph, both_appear=True,weighted=False):
 
     for key, value in g.nodes[srctype].data.items():
         new_g.nodes[srctype].data[key] = value
-    new_g.edata['edge_weight']=torch.tensor(final_adj.data,dtype=torch.float32
-                                            ,device='cuda:0')
+    new_g.edata['edge_weight'] = torch.tensor(final_adj.data, dtype=torch.float32
+                                              , device='cuda:0')
     if srctype != dsttype:
         for key, value in g.nodes[dsttype].data.items():
             new_g.nodes[dsttype].data[key] = value
@@ -145,7 +149,7 @@ sampling_configure = {
 def setup(args):
     args.update(default_configure)
     set_random_seed(args['seed'])
-    #args['dataset'] = 'ACMRaw' if args['hetero'] else 'ACM'
+    # args['dataset'] = 'ACMRaw' if args['hetero'] else 'ACM'
     args['device'] = 'cuda: 0' if torch.cuda.is_available() else 'cpu'
     args['log_dir'] = setup_log_dir(args)
     return args
@@ -222,7 +226,7 @@ def load_acm_raw(remove_self_loop):
     p_vs_a = data['PvsA']  # paper-author
     p_vs_t = data['PvsT']  # paper-term, bag of words
     p_vs_c = data['PvsC']  # paper-conference, labels come from that
-
+    p_vs_p = data['PvsP']
     # We assign
     # (1) KDD papers as class 0 (data mining),
     # (2) SIGMOD and VLDB papers as class 1 (database),
@@ -236,13 +240,15 @@ def load_acm_raw(remove_self_loop):
     p_vs_a = p_vs_a[p_selected]
     p_vs_t = p_vs_t[p_selected]
     p_vs_c = p_vs_c[p_selected]
-
+    p_vs_p = p_vs_p[p_selected, :][:, p_selected]
     pa = dgl.bipartite(p_vs_a, 'paper', 'pa', 'author')
     ap = dgl.bipartite(p_vs_a.transpose(), 'author', 'ap', 'paper')
     pl = dgl.bipartite(p_vs_l, 'paper', 'pf', 'field')
     lp = dgl.bipartite(p_vs_l.transpose(), 'field', 'fp', 'paper')
     pt = dgl.bipartite(p_vs_t, 'paper', 'pt', "term")
     tp = dgl.bipartite(p_vs_t.transpose(), 'term', 'tp', 'paper')
+    # pp = dgl.bipartite(p_vs_p,'paper','pp','paper')
+    # ppr = dgl.bipartite(p_vs_p.transpose(),'paper','ppr','paper')
     hg = dgl.hetero_from_relations([pa, ap, pl, lp, pt, tp])
 
     features = torch.FloatTensor(p_vs_t.toarray())
@@ -333,18 +339,16 @@ def load_imdb_raw(remove_self_loop):
     # url = 'dataset/ACM.mat'
     data_path = get_download_dir() + '/imdb_3_class.pkl'
     # download(_get_dgl_url(url), path=data_path)
-    f=open(data_path,mode="rb")
+    f = open(data_path, mode="rb")
     data = pickle.load(f)
 
-    m_vs_d = data['md'] # movie-director
-    m_vs_a = data['ma'] # movie-actor
-
+    m_vs_d = data['md']  # movie-director
+    m_vs_a = data['ma']  # movie-actor
 
     md = dgl.bipartite(m_vs_d, 'movie', 'md', 'director')
     dm = dgl.bipartite(m_vs_d.transpose(), 'director', 'dm', 'movie')
     ma = dgl.bipartite(m_vs_a, 'movie', 'ma', "actor")
     am = dgl.bipartite(m_vs_a.transpose(), 'actor', 'am', 'movie')
-
 
     hg = dgl.hetero_from_relations([md, dm, ma, am])
     # we assign the terms in the papers which the author published as
@@ -375,6 +379,8 @@ def load_imdb_raw(remove_self_loop):
 
     return hg, features, labels, num_classes, train_idx, val_idx, test_idx, \
            train_mask, val_mask, test_mask
+
+
 def load_data(dataset, remove_self_loop=False):
     if dataset == 'ACM':
         return load_acm(remove_self_loop)
@@ -424,6 +430,8 @@ class EarlyStopping(object):
     def load_checkpoint(self, model):
         """Load the latest checkpoint."""
         model.load_state_dict(torch.load(self.filename))
+
+
 class GATConv(nn.Module):
     r"""Apply `Graph Attention Network <https://arxiv.org/pdf/1710.10903.pdf>`__
     over an input signal.
@@ -459,6 +467,7 @@ class GATConv(nn.Module):
         If not None, applies an activation function to the updated node features.
         Default: ``None``.
     """
+
     def __init__(self,
                  in_feats,
                  out_feats,
@@ -523,8 +532,8 @@ class GATConv(nn.Module):
         # compute edge attention
         graph.apply_edges(fn.u_add_v('el', 'er', 'e'))
         e = self.leaky_relu(graph.edata.pop('e'))
-        #multiplcation with edge weights
-        e=graph.edata['edge_weight'].reshape((-1,1,1))*e
+        # multiplcation with edge weights
+        e = graph.edata['edge_weight'].reshape((-1, 1, 1)) * e
         # compute softmax
         graph.edata['a'] = self.attn_drop(edge_softmax(graph, e))
         # message passing

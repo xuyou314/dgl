@@ -42,14 +42,20 @@ def main(args):
     test_mask = test_mask.to(args['device'])
     acm_meta_g1 = [[['pa', 'ap'], ['pf', 'fp']]]
     acm_meta_g2 = [[['pa', 'ap'], ['pt', 'tp']]]
-    acm_meta_g3 = [[['pf', 'fp'], ['pf', 'fp']]]
+    acm_meta_g3 = [[['pf', 'fp'], ['pt', 'tp']]]
     acm_meta_p1 = [[['pa', 'ap']]]
     acm_meta_p2 = [[['pf', 'fp']]]
     acm_meta_p3 = [[['pt', 'tp']]]
-    acm_meta_graphs_1 = [acm_meta_p1, acm_meta_p2]  ##91.58 91.58
+    acm_meta_graphs_1 = [acm_meta_p1, acm_meta_p2]
+    ##weighted 1.91.23 91.33 2 91.73 91.72 3 91.83 91.94 4 91.73 91.81
+    #unweighted 1.91.55 91.66 2 90.27 90.37 3.90.87 90.97 4 90.73 90.75
     acm_meta_graphs_2 = [acm_meta_g1, acm_meta_p1]  ##91.44 91.37
     acm_meta_graphs_3 = [acm_meta_g1, acm_meta_p2]  ##90.94 90.95
-    acm_meta_graphs_4 = [acm_meta_g1, acm_meta_p1, acm_meta_p2]  ##92.26 92.26 #both 1. 92.29 92.31
+    acm_meta_graphs_4 = [acm_meta_g1, acm_meta_p1, acm_meta_p2]
+    #both weighted 1.91.76 91.89 2 92.47 92.56 3 92.72 92.70 4 92.54 92.57 5 91.16 91.38
+    #91.97 92.01 7 90.13 90.16 8 91.55 91.68 9 90.91 90.89 10 91.44 91.32
+    #both unweighted 91.87 91.86
+    #single weighted 1 91.90 92.03 2 91.30 91.28  3 91.87 91.83 4
     acm_meta_graphs_5 = [acm_meta_g1, acm_meta_p1, acm_meta_p2, acm_meta_p3]  ##92.05 92.08
     acm_meta_graphs_6 = [acm_meta_p1, acm_meta_p2, acm_meta_p3]  ##91.37 91.38
     acm_meta_graphs_7 = [acm_meta_p1, acm_meta_p2, acm_meta_p3, acm_meta_g1,
@@ -64,49 +70,53 @@ def main(args):
     dblp_meta_g2 = [[['ap', 'pc', 'cp', 'pa'], ['ap', 'pt', 'tp', 'pa']]]
     dblp_meta_graph_1 = [dblp_meta_p1, dblp_meta_p2,
                          dblp_meta_p3]  # 92.92 92.35
-    ##unweighted 1 92.78 92.26 2 92.92 92.41 3 92.04 91.54 4.92.81 92.33
+    ##unweighted 1 92.78 92.26 2 92.92 92.41 3 92.04 91.54 4.92.81 92.33 5 .92.88 92.44
     ## weighted 1 92.74 92.27 2 92.81 92.28 3 93.20 92.69 4 93.55 93.15 5 93.94 93.60
+    ##
     dblp_meta_graph_2 = [dblp_meta_p1, dblp_meta_p2,
                          dblp_meta_p3, dblp_meta_g1]  ##92.99 92.44
     dblp_meta_graph_3 = [dblp_meta_p1, dblp_meta_p2,
                          dblp_meta_p3, dblp_meta_g2]  ##93.45 92.95
     ##both
     # 1 94.12 93.71 2 93.84 93.46 3 93.41 92.90 4 93.59 93.10 5 93.13 92.64
-    # 6 92.43 91.99 7 93.55 93.14 8 93.80 93.27
+    # 6 92.43 91.99 7 93.55 93.14 8 93.80 93.27 9 93.45 93.01 10 93.77 93.38 10
+    # 1  93.52 93.13
     ##addition only 1 92.81 92.29 2 92.92 92.42 3 92.36 91.84 4 92.22 91.73
-    #
+    #93.69 93.23
     dblp_meta_graph_4 = [dblp_meta_p1, dblp_meta_g2]  ##93.34 92.83
 
     imdb_meta_p1 = [[['md', 'dm']]]
     imdb_meta_p2 = [[['ma', 'am']]]
     imdb_meta_g1 = [[['md', 'dm'], ['ma', 'am']]]
     imdb_meta_graph_1=[imdb_meta_p1,imdb_meta_p2]
-    #unweighted 1.59.92 59.87 2 59.62 58.96 3 60.20 59.91 4 59.99 59.84 5 62.28 61.86
-    #weighted 1.61.60 61.42 2 61.43 61.21 3 60.85 60.74 4 59.38 59.38 5 60.30 59.86
+    #unweighted 1.59.21 59.18 2 59.99 58.31 3 59.58 59.45
+    #weighted 1.60.30 60.25 2 61.19 60.38 3 60.88 60.17
     imdb_meta_graph_2=[imdb_meta_p1,imdb_meta_p2,imdb_meta_g1]
-    #unweighted59.48 59.51
-    #weighted
+    #unweighted
+    #both weighted 1 61.53 61.32 2 60.74 60.68 3 61.09 59.79 4 60.81 60.32
+    # 5 61.50 61.73 6 61.67 61.44
     if args['hetero']:
         from model_hetero import HAN
-        if args['dataset']=="ACM":
-            model = HAN(meta_paths=acm_meta_graphs_3,
-                        in_size=features.shape[1],
+        if args['dataset']=="ACMRaw":
+            model = HAN(meta_paths=acm_meta_graphs_4,
+                         in_size=features.shape[1],
                         hidden_size=args['hidden_units'],
                         out_size=num_classes,
                         num_heads=args['num_heads'],
                         dropout=args['dropout'],
-                        use_both=True).to(args['device'])
+                        use_both=False,
+                        weighted=True).to(args['device'])
         elif args['dataset']=="DBLP":
-            model = HAN(meta_paths=dblp_meta_graph_1,
+            model = HAN(meta_paths=dblp_meta_graph_3,
                         in_size=features.shape[1],
                         hidden_size=args['hidden_units'],
                         out_size=num_classes,
                         num_heads=args['num_heads'],
                         dropout=args['dropout'],
                         use_both=True,
-                        weighted=False).to(args['device'])
+                        weighted=True).to(args['device'])
         else:
-            model = HAN(meta_paths=imdb_meta_graph_2,
+            model = HAN(meta_paths=imdb_meta_graph_1,
                         in_size=features.shape[1],
                         hidden_size=args['hidden_units'],
                         out_size=num_classes,
@@ -160,7 +170,7 @@ if __name__ == '__main__':
     from utils import setup
 
     parser = argparse.ArgumentParser('HAN')
-    parser.add_argument('-s', '--seed', type=int, default=np.random.randint(0, 500000),
+    parser.add_argument('-s', '--seed', type=int, default=np.random.randint(0,500000),
                         help='Random seed')
     parser.add_argument('-ld', '--log-dir', type=str, default='results',
                         help='Dir for saving training results')
