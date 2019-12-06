@@ -111,7 +111,8 @@ def metagraph_graph(g, meta_graph, both_appear=True, weighted=False):
         final_adj = final_adj * cur_sub_g
         final_adj.setdiag(0)
         final_adj.eliminate_zeros()
-        final_adj = final_adj + sparse.eye(final_adj.shape[0])
+        final_adj = final_adj + 2*sparse.eye(final_adj.shape[0])
+        #final_adj[final_adj > 2000] = 2000
         if not weighted:
             final_adj = (final_adj != 0).tocsr()
     srctype = g.to_canonical_etype(meta_graph[0][0][0])[0]
@@ -122,7 +123,7 @@ def metagraph_graph(g, meta_graph, both_appear=True, weighted=False):
     for key, value in g.nodes[srctype].data.items():
         new_g.nodes[srctype].data[key] = value
     new_g.edata['edge_weight'] = torch.tensor(final_adj.data, dtype=torch.float32
-                                              , device='cuda:0')
+                                              , device='cpu')
     if srctype != dsttype:
         for key, value in g.nodes[dsttype].data.items():
             new_g.nodes[dsttype].data[key] = value
@@ -137,8 +138,9 @@ default_configure = {
     'hidden_units': 8,
     'dropout': 0.6,
     'weight_decay': 0.001,
-    'num_epochs': 400,
-    'patience': 100
+    'num_epochs': 200,
+    'patience': 100,
+    'embedding_dim':256
 }
 
 sampling_configure = {
